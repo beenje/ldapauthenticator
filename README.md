@@ -63,6 +63,7 @@ Don't forget the preceeding `c.` for setting configuration parameters! JupyterHu
 uses [traitlets](https://traitlets.readthedocs.io) for configuration, and the `c` represents the [config object](https://traitlets.readthedocs.io/en/stable/config.html).
 
 The `{username}` is expanded into the username the user provides.
+This parameter is not used when `LDAPAuthenticator.lookup_dn` is set to True.
 
 ### Optional configuration ###
 
@@ -147,12 +148,6 @@ Technical account for user lookup, if `lookup_dn` is set to True.
 If both lookup_dn_search_user and lookup_dn_search_password are None, then anonymous LDAP query will be done.
 
 
-#### `LDAPAuthenticator.lookup_dn_user_dn_attribute` ####
-
-Attribute containing user's name needed for  building DN string, if `lookup_dn` is set to True.
-See `user_search_base` for info on how this attribute is used.
-For most LDAP servers, this is username.  For Active Directory, it is cn.
-
 #### `LDAPAuthenticator.escape_userdn` ####
 
 If set to True, escape special chars in userdn when authenticating in LDAP.
@@ -180,7 +175,6 @@ c.LDAPAuthenticator.lookup_dn_search_user = 'ldap_search_user_technical_account'
 c.LDAPAuthenticator.lookup_dn_search_password = 'secret'
 c.LDAPAuthenticator.user_search_base = 'ou=people,dc=wikimedia,dc=org'
 c.LDAPAuthenticator.user_attribute = 'sAMAccountName'
-c.LDAPAuthenticator.lookup_dn_user_dn_attribute = 'cn'
 c.LDAPAuthenticator.escape_userdn = False
 ```
 

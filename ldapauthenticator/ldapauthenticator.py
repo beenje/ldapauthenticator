@@ -123,7 +123,7 @@ class LDAPAuthenticator(Authenticator):
         is set to the current username to form the userdn.
 
         For example, if all users objects existed under the base ou=people,dc=wikimedia,dc=org, and
-        the username users use is set with the attribute `uid`, you can use the following config:
+        the username users use is set with the attribute `sAMAccountName`, you can use the following config:
 
         ```
         c.LDAPAuthenticator.lookup_dn = True
@@ -132,7 +132,6 @@ class LDAPAuthenticator(Authenticator):
         c.LDAPAuthenticator.lookup_dn_search_password = 'secret'
         c.LDAPAuthenticator.user_search_base = 'ou=people,dc=wikimedia,dc=org'
         c.LDAPAuthenticator.user_attribute = 'sAMAccountName'
-        c.LDAPAuthenticator.lookup_dn_user_dn_attribute = 'cn'
         ```
         """
     )
@@ -180,19 +179,6 @@ class LDAPAuthenticator(Authenticator):
         """
     )
 
-    lookup_dn_user_dn_attribute = Unicode(
-        config=True,
-        default_value=None,
-        allow_none=True,
-        help="""
-        Attribute containing user's name needed for  building DN string, if `lookup_dn` is set to True.
-
-        See `user_search_base` for info on how this attribute is used.
-
-        For most LDAP servers, this is username.  For Active Directory, it is cn.
-        """
-    )
-
     escape_userdn = Bool(
         False,
         config=True,
@@ -204,46 +190,45 @@ class LDAPAuthenticator(Authenticator):
         """
     )
 
-    def resolve_username(self, username_supplied_by_user):
-        if self.lookup_dn:
-            server = ldap3.Server(
-                self.server_address,
-                port=self.server_port,
-                use_ssl=self.use_ssl
-            )
+    def retrieve_userdn(self, username_supplied_by_user):
+        server = ldap3.Server(
+            self.server_address,
+            port=self.server_port,
+            use_ssl=self.use_ssl
+        )
 
-            search_filter = self.lookup_dn_search_filter.format(
-                login_attr=self.user_attribute,
-                login=username_supplied_by_user
+        search_filter = self.lookup_dn_search_filter.format(
+            login_attr=self.user_attribute,
+            login=username_supplied_by_user
+        )
+        self.log.debug(
+            "Looking up user with search_base={search_base}, search_filter='{search_filter}'".format(
+                search_base=self.user_search_base,
+                search_filter=search_filter
             )
-            self.log.debug(
-                "Looking up user with search_base={search_base}, search_filter='{search_filter}', attributes={attributes}".format(
+        )
+
+        conn = ldap3.Connection(server, user=self.escape_userdn_if_needed(self.lookup_dn_search_user), password=self.lookup_dn_search_password)
+        is_bound = conn.bind()
+        if not is_bound:
+            self.log.warn("Can't connect to LDAP")
+            return None
+
+        conn.search(
+            search_base=self.user_search_base,
+            search_scope=ldap3.SUBTREE,
+            search_filter=search_filter
+        )
+
+        if len(conn.response) == 0 or 'dn' not in conn.response[0]:
+            self.log.warn(
+                "No user entry found when looking up with search_base={search_base}, search_filter='{search_filter}'".format(
                     search_base=self.user_search_base,
-                    search_filter=search_filter,
-                    attributes=self.user_attribute
+                    search_filter=search_filter
                 )
             )
-
-            conn = ldap3.Connection(server, user=self.escape_userdn_if_needed(self.lookup_dn_search_user), password=self.lookup_dn_search_password)
-            is_bound = conn.bind()
-            if not is_bound:
-                self.log.warn("Can't connect to LDAP")
-                return None
-
-            conn.search(
-                search_base=self.user_search_base,
-                search_scope=ldap3.SUBTREE,
-                search_filter=search_filter,
-                attributes=[self.lookup_dn_user_dn_attribute]
-            )
-
-            if len(conn.response) == 0 or 'attributes' not in conn.response[0].keys():
-                self.log.warn('username:%s No such user entry found when looking up with attribute %s', username_supplied_by_user,
-                              self.user_attribute)
-                return None
-            return conn.response[0]['attributes'][self.lookup_dn_user_dn_attribute]
-        else:
-            return username_supplied_by_user
+            return None
+        return conn.response[0]['dn']
 
     def escape_userdn_if_needed(self, userdn):
         if self.escape_userdn:
@@ -255,6 +240,7 @@ class LDAPAuthenticator(Authenticator):
     def authenticate(self, handler, data):
         username = data['username']
         password = data['password']
+
         # Get LDAP Connection
         def getConnection(userdn, username, password):
             server = ldap3.Server(
@@ -263,12 +249,12 @@ class LDAPAuthenticator(Authenticator):
                 use_ssl=self.use_ssl
             )
             self.log.debug('Attempting to bind {username} with {userdn}'.format(
-                    username=username,
-                    userdn=userdn
+                username=username,
+                userdn=userdn
             ))
             conn = ldap3.Connection(server, user=self.escape_userdn_if_needed(userdn), password=password)
             return conn
-        
+
         # Protect against invalid usernames as well as LDAP injection attacks
         if not re.match(self.valid_username_regex, username):
             self.log.warn('username:%s Illegal characters in username, must match regex %s', username, self.valid_username_regex)
@@ -280,29 +266,27 @@ class LDAPAuthenticator(Authenticator):
             return None
 
         isBound = False
-        self.log.debug("TYPE= '%s'",isinstance(self.bind_dn_template, list))
 
-        resolved_username = self.resolve_username(username)
-        if resolved_username is None:
-            return None
-
-        # In case, there are multiple binding templates
-        if isinstance(self.bind_dn_template, list):
+        if self.lookup_dn:
+            userdn = self.retrieve_userdn(username)
+            if userdn is None:
+                return None
+            conn = getConnection(userdn, username, password)
+            isBound = conn.bind()
+        else:
+            if not isinstance(self.bind_dn_template, list):
+                self.bind_dn_template = [self.bind_dn_template]
             for dn in self.bind_dn_template:
-                userdn = dn.format(username=resolved_username)
+                userdn = dn.format(username=username)
                 conn = getConnection(userdn, username, password)
                 isBound = conn.bind()
                 self.log.debug('Status of user bind {username} with {userdn} : {isBound}'.format(
                     username=username,
                     userdn=userdn,
                     isBound=isBound
-                ))                
+                ))
                 if isBound:
                     break
-        else:
-            userdn = self.bind_dn_template.format(username=resolved_username)
-            conn = getConnection(userdn, username, password)
-            isBound = conn.bind()
 
         if isBound:
             if self.allowed_groups:
